@@ -23,3 +23,4 @@ variable "common_tags" {
   type        = map(string)
   default     = {}
 }
+# Updated Wed Aug 13 20:55:33 GMT 2025
