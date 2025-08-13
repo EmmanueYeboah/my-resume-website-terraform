@@ -18,7 +18,6 @@ env:
   AWS_REGION: 'us-east-2'
 
 permissions:
-  id-token: write   # Required for OIDC
   contents: read    # Required for checking out code
 
 jobs:
@@ -38,33 +37,17 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: 'Setup Terraform (to get outputs)'
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: '1.6'
-        terraform_wrapper: false
-
-    - name: 'Get Infrastructure Outputs'
-      id: tf-outputs
-      working-directory: terraform
+    - name: 'Get Infrastructure Resources'
+      id: aws-resources
       run: |
-        # Create terraform.tfvars for terraform to work
-        cat << EOF > terraform.tfvars
-        aws_region   = "${{ vars.AWS_REGION || 'us-east-2' }}"
-        project_name = "${{ vars.PROJECT_NAME || 'resume-website' }}"
-        environment  = "${{ vars.ENVIRONMENT || 'dev' }}"
-        common_tags = {
-          ManagedBy = "GitHub Actions"
-          Purpose   = "Resume Website"
-        }
-        EOF
+        # Find S3 bucket with resume-website prefix
+        BUCKET_NAME=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'resume-website')].Name" --output text)
         
-        terraform init
+        # Find CloudFront distribution
+        DISTRIBUTION_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?Comment=='resume-website Resume Website'].Id" --output text)
         
-        # Get the outputs we need
-        BUCKET_NAME=$(terraform output -raw s3_bucket_name)
-        DISTRIBUTION_ID=$(terraform output -raw cloudfront_distribution_id)
-        WEBSITE_URL=$(terraform output -raw website_url)
+        # Get CloudFront domain name for website URL
+        WEBSITE_URL="https://$(aws cloudfront get-distribution --id $DISTRIBUTION_ID --query 'Distribution.DomainName' --output text)"
         
         echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
         echo "distribution_id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
@@ -88,7 +71,7 @@ jobs:
     - name: 'Deploy Website to S3'
       run: |
         echo "🚀 Uploading website files to S3..."
-        aws s3 sync website/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+        aws s3 sync website/ s3://${{ steps.aws-resources.outputs.bucket_name }}/ \
           --delete \
           --exact-timestamps \
           --include "*" \
@@ -102,7 +85,7 @@ jobs:
         echo "🔧 Setting correct MIME types..."
         
         # Set content type for HTML files
-        aws s3 cp s3://${{ steps.tf-outputs.outputs.bucket_name }}/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+        aws s3 cp s3://${{ steps.aws-resources.outputs.bucket_name }}/ s3://${{ steps.aws-resources.outputs.bucket_name }}/ \
           --recursive \
           --exclude "*" \
           --include "*.html" \
@@ -110,7 +93,7 @@ jobs:
           --metadata-directive REPLACE
         
         # Set content type for CSS files
-        aws s3 cp s3://${{ steps.tf-outputs.outputs.bucket_name }}/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+        aws s3 cp s3://${{ steps.aws-resources.outputs.bucket_name }}/ s3://${{ steps.aws-resources.outputs.bucket_name }}/ \
           --recursive \
           --exclude "*" \
           --include "*.css" \
@@ -118,7 +101,7 @@ jobs:
           --metadata-directive REPLACE
         
         # Set content type for JavaScript files
-        aws s3 cp s3://${{ steps.tf-outputs.outputs.bucket_name }}/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+        aws s3 cp s3://${{ steps.aws-resources.outputs.bucket_name }}/ s3://${{ steps.aws-resources.outputs.bucket_name }}/ \
           --recursive \
           --exclude "*" \
           --include "*.js" \
@@ -131,7 +114,7 @@ jobs:
       run: |
         echo "🔄 Invalidating CloudFront cache..."
         INVALIDATION_ID=$(aws cloudfront create-invalidation \
-          --distribution-id ${{ steps.tf-outputs.outputs.distribution_id }} \
+          --distribution-id ${{ steps.aws-resources.outputs.distribution_id }} \
           --paths "/*" \
           --query 'Invalidation.Id' \
           --output text)
@@ -145,12 +128,12 @@ jobs:
         echo "🎉 Website Deployment Complete!"
         echo "================================"
         echo ""
-        echo "📁 Files deployed to: s3://${{ steps.tf-outputs.outputs.bucket_name }}"
-        echo "🌐 Website URL: ${{ steps.tf-outputs.outputs.website_url }}"
+        echo "📁 Files deployed to: s3://${{ steps.aws-resources.outputs.bucket_name }}"
+        echo "🌐 Website URL: ${{ steps.aws-resources.outputs.website_url }}"
         echo "⏰ Changes will be live in 5-15 minutes"
         echo ""
         echo "🔍 To check deployment status:"
-        echo "aws cloudfront get-distribution --id ${{ steps.tf-outputs.outputs.distribution_id }}"
+        echo "aws cloudfront get-distribution --id ${{ steps.aws-resources.outputs.distribution_id }}"
 
     - name: 'Create Deployment Summary'
       run: |
@@ -158,9 +141,9 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
         echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-        echo "| 🌐 Website URL | [${{ steps.tf-outputs.outputs.website_url }}](${{ steps.tf-outputs.outputs.website_url }}) |" >> $GITHUB_STEP_SUMMARY
-        echo "| 📦 S3 Bucket | \`${{ steps.tf-outputs.outputs.bucket_name }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| ☁️ CloudFront ID | \`${{ steps.tf-outputs.outputs.distribution_id }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🌐 Website URL | [${{ steps.aws-resources.outputs.website_url }}](${{ steps.aws-resources.outputs.website_url }}) |" >> $GITHUB_STEP_SUMMARY
+        echo "| 📦 S3 Bucket | \`${{ steps.aws-resources.outputs.bucket_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| ☁️ CloudFront ID | \`${{ steps.aws-resources.outputs.distribution_id }}\` |" >> $GITHUB_STEP_SUMMARY
         echo "| ⏰ Deployment Time | $(date -u +"%Y-%m-%d %H:%M:%S UTC") |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "✅ Your resume website has been deployed successfully!" >> $GITHUB_STEP_SUMMARY
