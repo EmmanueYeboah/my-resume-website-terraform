@@ -15,7 +15,7 @@ on:
       - main
 
 env:
-  AWS_REGION: 'us-east-1'
+  AWS_REGION: 'us-east-2'
 
 permissions:
   id-token: write   # Required for OIDC
@@ -34,8 +34,8 @@ jobs:
     - name: 'Configure AWS Credentials'
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        role-session-name: GitHubActions-WebsiteDeploy
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
     - name: 'Setup Terraform (to get outputs)'
@@ -50,7 +50,7 @@ jobs:
       run: |
         # Create terraform.tfvars for terraform to work
         cat << EOF > terraform.tfvars
-        aws_region   = "${{ vars.AWS_REGION || 'us-east-1' }}"
+        aws_region   = "${{ vars.AWS_REGION || 'us-east-2' }}"
         project_name = "${{ vars.PROJECT_NAME || 'resume-website' }}"
         environment  = "${{ vars.ENVIRONMENT || 'dev' }}"
         common_tags = {
