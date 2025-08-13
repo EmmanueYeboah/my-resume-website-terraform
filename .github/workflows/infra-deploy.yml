@@ -1,4 +1,4 @@
-name: Deploy Resume Website
+name: Terraform Infrastructure Deployment
 
 on:
   push:
@@ -12,24 +12,25 @@ permissions:
 jobs:
   terraform:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: arn:aws:iam::791608741362:role/mygithub-actions-terraform-role
+          aws-region: us-east-2
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
         run: terraform init
-        working-directory: terraform
+
+      - name: Terraform Plan
+        run: terraform plan
 
       - name: Terraform Apply
         run: terraform apply -auto-approve
-        working-directory: terraform
+# dont mind me

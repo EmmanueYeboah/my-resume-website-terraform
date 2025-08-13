@@ -1,32 +1,8 @@
-provider "aws" {
-  region = "us-east-2"
+module "vpc" {
+  source  = "git::https://github.com/EmmanueYeboah/terraform-aws-modules.git//vpc?ref=v1.0.0"
+  vpc_cidr = "10.0.0.0/16"
+  az_count = 2
 }
 
-resource "aws_s3_bucket" "site_bucket" {
-  bucket = var.bucket_name
-  acl    = "public-read"
-
-  website {
-    index_document = "index.html"
-    error_document = "error.html"
-  }
-}
-
-resource "aws_s3_bucket_policy" "site_policy" {
-  bucket = aws_s3_bucket.site_bucket.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "PublicReadGetObject"
-        Effect    = "Allow"
-        Principal = "*"
-        Action    = ["s3:GetObject"]
-        Resource  = ["${aws_s3_bucket.site_bucket.arn}/*"]
-      }
-    ]
-  })
-}
 
 
