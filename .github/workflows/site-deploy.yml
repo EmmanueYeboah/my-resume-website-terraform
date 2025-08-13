@@ -1,31 +1,168 @@
-name: Deploy Static Website
+name: 'Deploy Website Content'
 
 on:
   push:
     branches:
       - main
     paths:
-      - "site/**"
+      - 'website/**'
+  workflow_dispatch:  # Allow manual triggering
+  workflow_run:       # Run after infrastructure is deployed
+    workflows: ["Terraform Infrastructure"]
+    types:
+      - completed
+    branches:
+      - main
+
+env:
+  AWS_REGION: 'us-east-1'
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write   # Required for OIDC
+  contents: read    # Required for checking out code
 
 jobs:
-  deploy-site:
+  deploy-website:
+    name: 'Deploy Website to S3'
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: 'Checkout Code'
+      uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::791608741362:role/mygithub-actions-terraform-role
-          aws-region: us-east-2
+    - name: 'Configure AWS Credentials'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-WebsiteDeploy
+        aws-region: ${{ env.AWS_REGION }}
 
-      - name: Sync files to S3
-        run: |
-          aws s3 sync site/ s3:// emmanuel-tf-state-2025\
-            --del
+    - name: 'Setup Terraform (to get outputs)'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: '1.6'
+        terraform_wrapper: false
+
+    - name: 'Get Infrastructure Outputs'
+      id: tf-outputs
+      working-directory: terraform
+      run: |
+        # Create terraform.tfvars for terraform to work
+        cat << EOF > terraform.tfvars
+        aws_region   = "${{ vars.AWS_REGION || 'us-east-1' }}"
+        project_name = "${{ vars.PROJECT_NAME || 'resume-website' }}"
+        environment  = "${{ vars.ENVIRONMENT || 'dev' }}"
+        common_tags = {
+          ManagedBy = "GitHub Actions"
+          Purpose   = "Resume Website"
+        }
+        EOF
+        
+        terraform init
+        
+        # Get the outputs we need
+        BUCKET_NAME=$(terraform output -raw s3_bucket_name)
+        DISTRIBUTION_ID=$(terraform output -raw cloudfront_distribution_id)
+        WEBSITE_URL=$(terraform output -raw website_url)
+        
+        echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+        echo "distribution_id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
+        echo "website_url=$WEBSITE_URL" >> $GITHUB_OUTPUT
+        
+        echo "📦 Deploying to bucket: $BUCKET_NAME"
+        echo "☁️ Distribution ID: $DISTRIBUTION_ID"
+        echo "🌐 Website URL: $WEBSITE_URL"
+
+    - name: 'Validate Website Files'
+      run: |
+        if [ ! -f "website/index.html" ]; then
+          echo "❌ Error: website/index.html not found!"
+          echo "Please make sure your website files are in the website/ directory"
+          exit 1
+        fi
+        
+        echo "✅ Found website files:"
+        find website/ -type f | head -10
+
+    - name: 'Deploy Website to S3'
+      run: |
+        echo "🚀 Uploading website files to S3..."
+        aws s3 sync website/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+          --delete \
+          --exact-timestamps \
+          --include "*" \
+          --exclude "*.DS_Store" \
+          --exclude "Thumbs.db"
+        
+        echo "✅ Website files uploaded successfully!"
+
+    - name: 'Set Correct Content Types'
+      run: |
+        echo "🔧 Setting correct MIME types..."
+        
+        # Set content type for HTML files
+        aws s3 cp s3://${{ steps.tf-outputs.outputs.bucket_name }}/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+          --recursive \
+          --exclude "*" \
+          --include "*.html" \
+          --content-type "text/html" \
+          --metadata-directive REPLACE
+        
+        # Set content type for CSS files
+        aws s3 cp s3://${{ steps.tf-outputs.outputs.bucket_name }}/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+          --recursive \
+          --exclude "*" \
+          --include "*.css" \
+          --content-type "text/css" \
+          --metadata-directive REPLACE
+        
+        # Set content type for JavaScript files
+        aws s3 cp s3://${{ steps.tf-outputs.outputs.bucket_name }}/ s3://${{ steps.tf-outputs.outputs.bucket_name }}/ \
+          --recursive \
+          --exclude "*" \
+          --include "*.js" \
+          --content-type "text/javascript" \
+          --metadata-directive REPLACE
+        
+        echo "✅ Content types set correctly!"
+
+    - name: 'Invalidate CloudFront Cache'
+      run: |
+        echo "🔄 Invalidating CloudFront cache..."
+        INVALIDATION_ID=$(aws cloudfront create-invalidation \
+          --distribution-id ${{ steps.tf-outputs.outputs.distribution_id }} \
+          --paths "/*" \
+          --query 'Invalidation.Id' \
+          --output text)
+        
+        echo "✅ Cache invalidation created: $INVALIDATION_ID"
+        echo "⏳ It may take 5-15 minutes for changes to propagate globally"
+
+    - name: 'Display Deployment Summary'
+      run: |
+        echo ""
+        echo "🎉 Website Deployment Complete!"
+        echo "================================"
+        echo ""
+        echo "📁 Files deployed to: s3://${{ steps.tf-outputs.outputs.bucket_name }}"
+        echo "🌐 Website URL: ${{ steps.tf-outputs.outputs.website_url }}"
+        echo "⏰ Changes will be live in 5-15 minutes"
+        echo ""
+        echo "🔍 To check deployment status:"
+        echo "aws cloudfront get-distribution --id ${{ steps.tf-outputs.outputs.distribution_id }}"
+
+    - name: 'Create Deployment Summary'
+      run: |
+        echo "## 🚀 Website Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| 🌐 Website URL | [${{ steps.tf-outputs.outputs.website_url }}](${{ steps.tf-outputs.outputs.website_url }}) |" >> $GITHUB_STEP_SUMMARY
+        echo "| 📦 S3 Bucket | \`${{ steps.tf-outputs.outputs.bucket_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| ☁️ CloudFront ID | \`${{ steps.tf-outputs.outputs.distribution_id }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| ⏰ Deployment Time | $(date -u +"%Y-%m-%d %H:%M:%S UTC") |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Your resume website has been deployed successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "> **Note:** Changes may take 5-15 minutes to propagate globally via CloudFront CDN." >> $GITHUB_STEP_SUMMARY

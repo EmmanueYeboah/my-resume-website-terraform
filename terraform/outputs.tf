@@ -1,19 +1,14 @@
-output "bucket_name" {
-  description = "The name of the created S3 bucket"
-  value       = aws_s3_bucket.example.bucket
+output "s3_bucket_name" {
+  description = "Name of the S3 bucket"
+  value       = aws_s3_bucket.website_bucket.id
 }
 
-output "bucket_arn" {
-  description = "The ARN of the created S3 bucket"
-  value       = aws_s3_bucket.example.arn
+output "website_url" {
+  description = "Website URL"
+  value       = "https://${aws_cloudfront_distribution.website_distribution.domain_name}"
 }
 
-output "vpc_id" {
-  value       = module.vpc.vpc_id
-  description = "The ID of the created VPC"
-}
-
-output "subnet_ids" {
-  value       = module.vpc.private_subnets
-  description = "The IDs of the created private subnets"
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID"
+  value       = aws_cloudfront_distribution.website_distribution.id
 }

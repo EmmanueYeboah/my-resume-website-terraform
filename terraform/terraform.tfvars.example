@@ -1,0 +1,13 @@
+# Example Terraform Variables
+# Copy this file to terraform.tfvars and customize the values
+
+aws_region   = "us-east-2"
+project_name = "resume-website"
+environment  = "dev"
+
+common_tags = {
+  ManagedBy = "Terraform"
+  Purpose   = "Resume Website"
+  Owner     = "Your Name"
+  Contact   = "your.email@example.com"
+}

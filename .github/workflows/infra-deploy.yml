@@ -1,36 +1,140 @@
-name: Terraform Infrastructure Deployment
+name: 'Terraform Infrastructure'
 
 on:
   push:
     branches:
       - main
+    paths:
+      - 'terraform/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  TF_VERSION: '1.6'
+  AWS_REGION: 'us-east-2'
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write   # Required for OIDC
+  contents: read    # Required for checking out code
+  pull-requests: write  # Required for PR comments
 
 jobs:
   terraform:
+    name: 'Terraform Plan & Apply'
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: 'Checkout Code'
+      uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::791608741362:role/mygithub-actions-terraform-role
-          aws-region: us-east-2
+    - name: 'Configure AWS Credentials'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-Terraform
+        aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+    - name: 'Setup Terraform'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform Init
-        run: terraform init
+    - name: 'Create terraform.tfvars'
+      run: |
+        cat << EOF > terraform.tfvars
+        aws_region   = "${{ vars.AWS_REGION || 'us-east-2' }}"
+        project_name = "${{ vars.PROJECT_NAME || 'resume-website' }}"
+        environment  = "${{ vars.ENVIRONMENT || 'dev' }}"
+        common_tags = {
+          ManagedBy = "GitHub Actions"
+          Purpose   = "Resume Website"
+          Owner     = "${{ vars.OWNER_NAME || 'DevOps Trainee' }}"
+          Contact   = "${{ vars.CONTACT_EMAIL || 'trainee@example.com' }}"
+        }
+        EOF
 
-      - name: Terraform Plan
-        run: terraform plan
+    - name: 'Terraform Format Check'
+      run: terraform fmt -check
+      continue-on-error: true
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
-# dont mind me
+    - name: 'Terraform Init'
+      run: terraform init
+
+    - name: 'Terraform Validate'
+      run: terraform validate
+
+    - name: 'Terraform Plan'
+      id: plan
+      run: |
+        terraform plan -no-color -out=tfplan
+        terraform show -no-color tfplan > plan.txt
+      continue-on-error: true
+
+    - name: 'Comment PR with Plan'
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      env:
+        PLAN: "${{ steps.plan.outputs.stdout }}"
+      with:
+        script: |
+          const fs = require('fs');
+          const plan = fs.readFileSync('terraform/plan.txt', 'utf8');
+          const output = `#### Terraform Plan 📖
+          <details><summary>Show Plan</summary>
+          
+          \`\`\`
+          ${plan}
+          \`\`\`
+          
+          </details>
+          
+          *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          })
+
+    - name: 'Terraform Apply'
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: terraform apply -auto-approve tfplan
+
+    - name: 'Get Terraform Outputs'
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      id: outputs
+      run: |
+        echo "bucket_name=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+        echo "website_url=$(terraform output -raw website_url)" >> $GITHUB_OUTPUT
+        echo "distribution_id=$(terraform output -raw cloudfront_distribution_id)" >> $GITHUB_OUTPUT
+
+    - name: 'Display Deployment Info'
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        echo "🚀 Infrastructure Deployed Successfully!"
+        echo "📦 S3 Bucket: ${{ steps.outputs.outputs.bucket_name }}"
+        echo "🌐 Website URL: ${{ steps.outputs.outputs.website_url }}"
+        echo "☁️ CloudFront Distribution: ${{ steps.outputs.outputs.distribution_id }}"
+
+    - name: 'Store Outputs as Artifacts'
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        mkdir -p outputs
+        echo "${{ steps.outputs.outputs.bucket_name }}" > outputs/bucket_name.txt
+        echo "${{ steps.outputs.outputs.website_url }}" > outputs/website_url.txt
+        echo "${{ steps.outputs.outputs.distribution_id }}" > outputs/distribution_id.txt
+
+    - name: 'Upload Deployment Outputs'
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      uses: actions/upload-artifact@v4
+      with:
+        name: terraform-outputs
+        path: terraform/outputs/
